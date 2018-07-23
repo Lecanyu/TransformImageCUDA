@@ -12,13 +12,13 @@
 
 int main()
 {
-	int bg_r = 0;
-	int bg_g = 0;
-	int bg_b = 0;
+	int bg_r = 248;
+	int bg_g = 8;
+	int bg_b = 248;
 
 	std::vector<std::string> img_filename = {
-		"E:/ImageDebug/botanical32/fragment_0001.png",
-		"E:/ImageDebug/botanical32/fragment_0002.png",
+		"C:/Users/range/Desktop/ImageDB-2360parts-BGU_3_10x10/fragment_0003.png",
+		"C:/Users/range/Desktop/ImageDB-2360parts-BGU_3_10x10/fragment_0004.png",
 		/*"C:/Users/range/Dropbox/JigsawGame/SquareFragmentsTestingData/mountain/5x5/fragment_0003.png",
 		"C:/Users/range/Dropbox/JigsawGame/SquareFragmentsTestingData/mountain/5x5/fragment_0004.png",*/
 		/*"C:/Users/range/Dropbox/JigsawGame/SquareFragmentsTestingData/mountain/5x5/fragment_0005.png",
@@ -96,9 +96,13 @@ int main()
 			}
 
 			double transform_mat[6] = {
-				1,0,0,
-				0,1,759
+				-0.862029, - 0.506859, 344.228000,
+				0.506859, - 0.862029, 57.373600
 			};
+			/*double transform_mat[6] = {
+				1,0,0,
+				0,1,0
+			};*/
 
 			double overlap_ratio = -1;
 			int overlap_pixel_num = 0;
@@ -107,13 +111,20 @@ int main()
 			int offset_rows = 0;
 			int offset_cols = 0;
 
+			int overlap_pixel_num_v2 = 0;
+			double overlap_ratio_v2 = -1;
+
 			int start_s = clock();
+			OnlyCalculateIntersection(img1_array, img1.rows, img1.cols, img2_array, img2.rows, img2.cols, transform_mat, overlap_pixel_num_v2, overlap_ratio_v2);
 			uint8* fusion_img = TransformImage(img1_array, img1.rows, img1.cols, img2_array, img2.rows, img2.cols, transform_mat, fusion_img_rows, fusion_img_cols, overlap_ratio, offset_rows, offset_cols, overlap_pixel_num);
 			int stop_s = clock();
 			/*std::cout << "time: " << (stop_s - start_s) / double(CLOCKS_PER_SEC) * 1000 << " ms" << std::endl;
 			std::cout << "overlap ratio: " << overlap_ratio << "\n";*/
+			printf("fusion version -- overlap ratio: %f, overlap number: %d\n", overlap_ratio, overlap_pixel_num);
+			printf("pure intersection detection version -- overlap ratio: %f, overlap number: %d\n", overlap_ratio_v2, overlap_pixel_num_v2);
+
 			total_time += (stop_s - start_s) / double(CLOCKS_PER_SEC) * 1000;
-			Showuint8Array(fusion_img, fusion_img_rows, fusion_img_cols);
+			//Showuint8Array(fusion_img, fusion_img_rows, fusion_img_cols);
 
 			delete[] img1_array;
 			delete[] img2_array;
@@ -125,5 +136,6 @@ int main()
 	std::cout << "----------------------------\n";
 	std::cout<< "total time: " << total_time << " ms\n";
 	
+	system("pause");
 	return 0;
 }

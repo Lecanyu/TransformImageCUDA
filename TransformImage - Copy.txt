@@ -1,3 +1,9 @@
+// Note:
+// This code uses original row and col of a image to calculate overlap ratio.
+// So it is a little bit fast, but the overlap ratio calculation is not quite accurate.
+// The accurate calculation should be "the overlap pixel number"/"color pixel number" (rule out the background pixels)
+
+
 #include "Utils.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -45,31 +51,6 @@ struct min_compare_with_exclude
 			return lhs < rhs;
 	}
 };
-
-__global__ void cuMarkColorPixel(uint8* image, int rows, int cols, int* color_mark_array)
-{
-	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	int total_thread = blockDim.x*gridDim.x;
-
-	for (int i = idx; i<rows*cols; i += total_thread)
-	{
-		int current_row = i / cols;
-		int current_col = i%cols;
-		// pixel position
-		int pixel_r_index = current_row*cols * 3 + current_col * 3;
-		int pixel_g_index = current_row*cols * 3 + current_col * 3 + 1;
-		int pixel_b_index = current_row*cols * 3 + current_col * 3 + 2;
-
-		// r,g,b
-		uint8 r = image[pixel_r_index];
-		uint8 g = image[pixel_g_index];
-		uint8 b = image[pixel_b_index];
-		if (r == 0 && g == 0 && b == 0)
-			color_mark_array[i] = 0;
-		else
-			color_mark_array[i] = 1;
-	}
-}
 
 __global__ void cuFindColorPixelIndice(int* row_index_array, int* col_index_array, uint8* image, int rows, int cols)
 {
@@ -154,25 +135,25 @@ cudaError_t LaunchCudaFindBoundingBox(const uint8* image, int rows, int cols, st
 		printf("cudaDeviceSynchronize returned error code %d after launching cuFindColorPixelIndice!\n", cudaStatus);
 		return cudaStatus;
 	}
-	if(affine==NULL)
-	{
-		thrust::device_ptr<int> row_array_ptr(row_index_array_cu);
-		thrust::device_ptr<int> col_array_ptr(col_index_array_cu);
-		// reduction
-		int min_row = *(thrust::min_element(row_array_ptr, row_array_ptr + cols*rows, min_compare_with_exclude()));
-		int min_col = *(thrust::min_element(col_array_ptr, col_array_ptr + cols*rows, min_compare_with_exclude()));
-		int max_row = *(thrust::max_element(row_array_ptr, row_array_ptr + cols*rows));
-		int max_col = *(thrust::max_element(col_array_ptr, col_array_ptr + cols*rows));
 
-		UV_i min_px, max_px;
-		min_px.row_i = min_row;
-		min_px.col_i = min_col;
-		max_px.row_i = max_row + 1;
-		max_px.col_i = max_col + 1;
-		out_boundingbox.push_back(min_px);
-		out_boundingbox.push_back(max_px);
-	}
-	else
+	thrust::device_ptr<int> row_array_ptr(row_index_array_cu);
+	thrust::device_ptr<int> col_array_ptr(col_index_array_cu);
+	// reduction
+	int min_row = *(thrust::min_element(row_array_ptr, row_array_ptr + cols*rows, min_compare_with_exclude()));
+	int min_col = *(thrust::min_element(col_array_ptr, col_array_ptr + cols*rows, min_compare_with_exclude()));
+	int max_row = *(thrust::max_element(row_array_ptr, row_array_ptr + cols*rows));
+	int max_col = *(thrust::max_element(col_array_ptr, col_array_ptr + cols*rows));
+
+	UV_i min_px, max_px;
+	min_px.row_i = min_row;
+	min_px.col_i = min_col;
+	max_px.row_i = max_row + 1;
+	max_px.col_i = max_col + 1;
+	out_boundingbox.push_back(min_px);
+	out_boundingbox.push_back(max_px);
+
+	//printf("bounding box: (%d,%d) -> (%d,%d)\n", min_row, min_col, max_row+1, max_col+1);
+	if (affine)
 	{
 		double* affine_mat_cu;
 		int* new_row_index_array_cu;
@@ -342,34 +323,16 @@ __global__ void cuCalculateOverlap(uint8* src_img_cu, int src_rows, int src_cols
 			out_overlap_pixels[i] = 0;
 	}
 }
-__global__ void cuMarkColorPixelUVI(UV_i* new_dst_image_device_ptr, int new_rows, int new_cols, int* color_mark_array)
-{
-	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	int total_thread = blockDim.x*gridDim.x;
-	for (int i = idx; i < new_rows*new_cols; i += total_thread)
-	{
-		if (!(new_dst_image_device_ptr[i].r == 0 && new_dst_image_device_ptr[i].g == 0 && new_dst_image_device_ptr[i].b == 0))
-			color_mark_array[i] = 1;
-		else
-			color_mark_array[i] = 0;
-	}
-}
 
 cudaError_t LaunchCudaCalculateOverlap(const uint8* src, int src_rows, int src_cols, UV_i* new_dst_image_device_ptr, int new_image_rows, int new_image_cols, double& overlap_ratio, int& overlap_pixels)
 {
 	cudaError_t cudaStatus = cudaSuccess;
 
-	int* src_color_mark_array_cu;
-	int* dst_color_mark_array_cu;
 	int* overlap_pixels_cu;
 	uint8* src_img_cu;
-	cudaStatus = cudaMalloc((void**)&src_color_mark_array_cu, src_rows*src_cols * sizeof(int));
-	cudaStatus = cudaMalloc((void**)&dst_color_mark_array_cu, new_image_rows*new_image_cols * sizeof(int));
 	cudaStatus = cudaMalloc((void**)&overlap_pixels_cu, new_image_rows*new_image_cols * sizeof(int));
 	cudaStatus = cudaMalloc((void**)&src_img_cu, src_rows*src_cols * 3 * sizeof(uint8));
 	cudaStatus = cudaMemcpy(src_img_cu, src, src_rows*src_cols * 3 * sizeof(uint8), cudaMemcpyHostToDevice);
-	cudaStatus = cudaMemset(src_color_mark_array_cu, 0, src_rows*src_cols * sizeof(int));
-	cudaStatus = cudaMemset(dst_color_mark_array_cu, 0, new_image_rows*new_image_cols * sizeof(int));
 
 	cuCalculateOverlap << <1024, 512 >> > (src_img_cu, src_rows, src_cols, new_dst_image_device_ptr, new_image_rows, new_image_cols, overlap_pixels_cu);
 	cudaStatus = cudaGetLastError();
@@ -382,42 +345,11 @@ cudaError_t LaunchCudaCalculateOverlap(const uint8* src, int src_rows, int src_c
 		printf("cudaDeviceSynchronize returned error code %d after launching cuCalculateOverlap!\n", cudaStatus);
 		return cudaStatus;
 	}
-	cuMarkColorPixel << <1024, 512 >> > (src_img_cu, src_rows, src_cols, src_color_mark_array_cu);
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		printf("cuMarkColorPixel for src_img launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		printf("cudaDeviceSynchronize returned error code %d after launching cuMarkColorPixel for src_img!\n", cudaStatus);
-		return cudaStatus;
-	}
-	cuMarkColorPixelUVI << <1024, 512 >> > (new_dst_image_device_ptr, new_image_rows, new_image_cols, dst_color_mark_array_cu);
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		printf("cuMarkColorPixelUVI for dst_img launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		printf("cudaDeviceSynchronize returned error code %d after launching cuMarkColorPixelUVI for dst_img!\n", cudaStatus);
-		return cudaStatus;
-	}
 
 	thrust::device_ptr<int> row_array_ptr(overlap_pixels_cu);
 	int overlap_sum = thrust::reduce(row_array_ptr, row_array_ptr + new_image_rows*new_image_cols);
-	thrust::device_ptr<int> src_color_mark_array_ptr(src_color_mark_array_cu);
-	int src_color_pixel_num = thrust::reduce(src_color_mark_array_ptr, src_color_mark_array_ptr + src_rows*src_cols);
-	thrust::device_ptr<int> dst_color_mark_array_ptr(dst_color_mark_array_cu);
-	int dst_color_pixel_num = thrust::reduce(dst_color_mark_array_ptr, dst_color_mark_array_ptr + new_image_rows*new_image_cols);
-
-	overlap_ratio = (double)overlap_sum / (double)std::min<int>(src_color_pixel_num, dst_color_pixel_num);
+	overlap_ratio = (double)overlap_sum / (double)std::min<int>(new_image_rows*new_image_cols, src_rows*src_cols);
 	overlap_pixels = overlap_sum;
-
-
-	cudaFree(src_color_mark_array_cu);
-	cudaFree(dst_color_mark_array_cu);
 	cudaFree(overlap_pixels_cu);
 	cudaFree(src_img_cu);
 
@@ -555,14 +487,10 @@ __global__ void cuOnlyCalculateOverlap(uint8* src, int src_rows, int src_cols, u
 cudaError_t LaunchCudaOnlyCalculateOverlap(const uint8* src, int src_rows, int src_cols, const uint8* dst, int dst_rows, int dst_cols, double* affine_mat, double& overlap_ratio, int& overlap_pixels)
 {
 	cudaError_t cudaStatus = cudaSuccess;
-	int* src_color_mark_array_cu;
-	int* dst_color_mark_array_cu;
 	int* overlap_pixels_cu;
 	double* affine_mat_cu;
 	uint8* src_img_cu;
 	uint8* dst_img_cu;
-	cudaStatus = cudaMalloc((void**)&src_color_mark_array_cu, src_rows*src_cols * sizeof(int));
-	cudaStatus = cudaMalloc((void**)&dst_color_mark_array_cu, dst_rows*dst_cols * sizeof(int));
 	cudaStatus = cudaMalloc((void**)&overlap_pixels_cu, dst_rows*dst_cols * sizeof(int));
 	cudaStatus = cudaMalloc((void**)&affine_mat_cu, 6 * sizeof(double));
 	cudaStatus = cudaMalloc((void**)&src_img_cu, src_rows*src_cols * 3 * sizeof(uint8));
@@ -571,8 +499,6 @@ cudaError_t LaunchCudaOnlyCalculateOverlap(const uint8* src, int src_rows, int s
 	cudaStatus = cudaMemcpy(dst_img_cu, dst, dst_rows*dst_cols * 3 * sizeof(uint8), cudaMemcpyHostToDevice);
 	cudaStatus = cudaMemcpy(affine_mat_cu, affine_mat, 6 * sizeof(double), cudaMemcpyHostToDevice);
 	cudaStatus = cudaMemset(overlap_pixels_cu, 0, dst_rows*dst_cols * sizeof(int));
-	cudaStatus = cudaMemset(src_color_mark_array_cu, 0, src_rows*src_cols * sizeof(int));
-	cudaStatus = cudaMemset(dst_color_mark_array_cu, 0, dst_rows*dst_cols * sizeof(int));
 
 	cuOnlyCalculateOverlap << <1024, 512 >> > (src_img_cu, src_rows, src_cols, dst_img_cu, dst_rows, dst_cols, affine_mat_cu, overlap_pixels_cu);
 	cudaStatus = cudaGetLastError();
@@ -585,44 +511,12 @@ cudaError_t LaunchCudaOnlyCalculateOverlap(const uint8* src, int src_rows, int s
 		printf("cudaDeviceSynchronize returned error code %d after launching cuOnlyCalculateOverlap!\n", cudaStatus);
 		return cudaStatus;
 	}
-	cuMarkColorPixel << <1024, 512 >> > (src_img_cu, src_rows, src_cols, src_color_mark_array_cu);
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		printf("cuMarkColorPixel for src_img launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		printf("cudaDeviceSynchronize returned error code %d after launching cuMarkColorPixel for src_img!\n", cudaStatus);
-		return cudaStatus;
-	}
-	cuMarkColorPixel << <1024, 512 >> > (dst_img_cu, dst_rows, dst_cols, dst_color_mark_array_cu);
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		printf("cuMarkColorPixel for dst_img launch failed: %s\n", cudaGetErrorString(cudaStatus));
-		return cudaStatus;
-	}
-	cudaStatus = cudaDeviceSynchronize();
-	if (cudaStatus != cudaSuccess) {
-		printf("cudaDeviceSynchronize returned error code %d after launching cuMarkColorPixel for dst_img!\n", cudaStatus);
-		return cudaStatus;
-	}
-
-
 	thrust::device_ptr<int> row_array_ptr(overlap_pixels_cu);
 	int overlap_sum = thrust::reduce(row_array_ptr, row_array_ptr + dst_rows*dst_cols);
-	thrust::device_ptr<int> src_color_mark_array_ptr(src_color_mark_array_cu);
-	int src_color_pixel_num = thrust::reduce(src_color_mark_array_ptr, src_color_mark_array_ptr + src_rows*src_cols);
-	thrust::device_ptr<int> dst_color_mark_array_ptr(dst_color_mark_array_cu);
-	int dst_color_pixel_num = thrust::reduce(dst_color_mark_array_ptr, dst_color_mark_array_ptr + dst_rows*dst_cols);
-
-	overlap_ratio = (double)overlap_sum / (double)std::min<int>(src_color_pixel_num, dst_color_pixel_num);
+	overlap_ratio = (double)overlap_sum / (double)std::min<int>(dst_rows*dst_cols, src_rows*src_cols);
 	overlap_pixels = overlap_sum;
 
-
 	cudaFree(overlap_pixels_cu);
-	cudaFree(src_color_mark_array_cu);
-	cudaFree(dst_color_mark_array_cu);
 	cudaFree(affine_mat_cu);
 	cudaFree(src_img_cu);
 	cudaFree(dst_img_cu);
